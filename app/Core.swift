@@ -18,6 +18,7 @@ let DIR_PATH      = HOME_DIR + "/sscreenlink"
 let STATE_SAVER   = DIR_PATH + "/saver-wanted"
 let STATE_KEEP    = DIR_PATH + "/keep-awake"
 let STATE_FORCE   = DIR_PATH + "/force-hold"     // 主控下发：本机屏保期间远端必须保持屏保
+let STATE_RELOAD  = DIR_PATH + "/reload-settings" // 对端推送设置后 touch：本机见文件即重载配置重启引擎
 let FILE_HB       = DIR_PATH + "/heartbeat"
 let FILE_ROLE     = DIR_PATH + "/role"
 let PID_CAFFEINE  = DIR_PATH + "/caffeinate.pid"
@@ -439,6 +440,14 @@ final class Engine {
         masterKeepAwakeTick(peer: S.peer, resyncKeep: keepAliveSync)
     }
 
+    /// 对端经 SSH 推送设置后 touch reload-settings → 重载配置并重启引擎
+    private func checkReload() {
+        guard fileExists(STATE_RELOAD) else { return }
+        removeFile(STATE_RELOAD)
+        appLog("engine: reload-settings signaled -> restart")
+        DispatchQueue.main.async { Engine.shared.restart() }
+    }
+
     // MARK: 主控
     private func startMaster() {
         let peer = S.peer
@@ -490,6 +499,7 @@ final class Engine {
                 }
                 self.lastWinState = w
             }
+            if self.tick % 5 == 0 { self.checkReload() }
             guard self.tick % 20 == 1 else { return }
             self.masterKeepAwakeTick(peer: peer, resyncKeep: true)
         }
@@ -624,7 +634,7 @@ final class Engine {
                     }
                 }
             }
-            if self.tick % 5 == 0 { ensureCaffeinate() }
+            if self.tick % 5 == 0 { ensureCaffeinate(); self.checkReload() }
         }
         q.async { reconcile() }
     }

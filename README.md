@@ -61,7 +61,7 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'   # 应输出 OK，且不询问密
 
 ```bash
 # 主控示例：把 peer 换成从动机的内网 IP（curl 下载不带隔离属性，通常无需右键绕过 Gatekeeper）
-VER=3.3
+VER=3.4
 curl -fL -o /tmp/ScreenLink.dmg "https://github.com/gsxuan/ScreenLink/releases/download/v${VER}/ScreenLink-${VER}.dmg"
 hdiutil attach /tmp/ScreenLink.dmg -nobrowse -mountpoint /Volumes/ScreenLink
 cp -R /Volumes/ScreenLink/ScreenLink.app /Applications/
@@ -82,7 +82,7 @@ open -a ScreenLink
 
 - **事件驱动、低延迟**——基于分布式通知与 FSEvents，不做轮询，进/出屏保同步 ≈ 140–350 ms
 - **主控 / 从动**双角色，逐项能力可单独开关（进屏保跟随、退屏保跟随、锁屏视同屏保、强制远端保持、活跃时阻止远端睡屏保……）
-- **控制面板窗口**：每个功能一行，开关、生效状态、生效时间段（时:分选择器）集中管理，改动立即生效
+- **控制面板窗口**：两台 Mac 的统一管理台 —— 状态总览（本机/远端实时状态、心跳、上次同步）、基础设置（联动/角色/远端地址/登录项/测试连接）、功能开关与生效时间窗表格、两机设置逐项对照 + 一键互相同步（SSH 推送，远端自动重载）
 - **被划掉也能拉回**——远端屏保被鼠标/键盘/通用控制打断时立即复拉，不裸露桌面
 - **菜单栏常驻、无 Dock 图标**，可一键隐藏图标后台运行；再点一次 App 图标即回来
 - 零第三方依赖：`swiftc` 直接编译，代码绘制图标，产出 DMG/ZIP
@@ -109,7 +109,11 @@ open -a ScreenLink
 **其它**
 
 - 菜单栏常驻图标，无 Dock 图标；顶部实时显示「本机状态 / 远端状态」
-- **控制面板窗口**：菜单里选「控制面板…」（或按 ⌘,），每个功能一行：启用开关、实时生效状态（全天生效 / 生效中 / 未生效）、「仅在时段生效」勾选与时:分选择器。时间段格式 `HH:mm-HH:mm`，结束早于开始视为跨午夜（如 `22:00-07:00`），默认全天；窗口外该开关视同关闭，改动立即生效。主控每 30s 检查一次窗口边界，穿越时自动重对齐两端状态（如离开窗口时清掉远端残留的 `force-hold`、释放保活）；面板内容随本机角色（主控/从动）自动切换
+- **控制面板窗口**：菜单里选「控制面板…」（或按 ⌘,），四个区块：
+  1. **状态总览**：本机 / 远端实时状态（屏保、强制保持、保活、心跳龄期、远端角色），面板打开期间 5s 自动刷新
+  2. **基础设置**：启用联动、本机角色、远端地址、登录时启动、测试连接
+  3. **功能开关与生效时间窗**：每功能一行（开关 / 生效状态 / 仅在时段生效 / 时:分选择器），时间段格式 `HH:mm-HH:mm`，结束早于开始视为跨午夜，默认全天；窗口外视同关闭，改动立即生效
+  4. **两机设置统一**：本机 vs 远端逐项对照（不一致标红 ✗），「远端同本机」经 SSH 写入设置并 touch `reload-settings` 通知远端自动重载（角色自动设为互补、peer 自动互指）；「本机同远端」反向拉取功能开关与时间窗（角色/地址不拉取，避免互指关系被破坏）
 - **隐藏菜单栏图标**：菜单里选「隐藏菜单栏图标（后台继续运行）」，图标收起但联动照常工作；**再点一次 App（访达 / 启动台 / Spotlight）图标就回来**
 - 一键测试远端连接、远端地址可改、登录时自动启动
 
@@ -168,6 +172,7 @@ ScreenLink/
 ├── app/                # 应用源码
 │   ├── main.swift       # 菜单栏 UI（NSStatusItem / 菜单 / 弹框）
 │   ├── Core.swift       # 联动引擎（主控下发 / 从动看护 / 状态文件）
+│   ├── Panel.swift      # 控制面板窗口（状态 / 基础设置 / 开关表 / 两机统一）
 │   └── Info.plist       # bundle 描述（LSUIElement、权限用途串、版本号）
 ├── icon/main.swift      # 代码绘制应用图标（生成 icon-1024.png）
 ├── docs/icon.png        # README 展示用图标
@@ -193,7 +198,7 @@ ScreenLink/
 
 | 路径 | 内容 |
 |---|---|
-| `~/sscreenlink/` | 状态文件（`saver-wanted` / `force-hold` / `keep-awake` / `role`） |
+| `~/sscreenlink/` | 状态文件（`saver-wanted` / `force-hold` / `keep-awake` / `role` / `reload-settings`） |
 | `~/sscreenlink-app.log` → `/tmp/screenlink-app.log` | 运行日志，含 SSH 失败的 stderr 全文 |
 | `~/Library/LaunchAgents/com.think.screenlink.app.plist` | 勾选「登录时启动」后生成 |
 | `defaults read com.think.screenlink.app` | 所有开关的当前值；生效时间段存为 `<开关名>Win`（如 `holdRemoteWin = "22:00-07:00"`，缺省全天） |

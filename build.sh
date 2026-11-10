@@ -9,7 +9,7 @@ rm -rf "$BUILD" "$APP"
 mkdir -p "$BUILD"
 
 echo "==> 编译主程序"
-swiftc -O -o "$BUILD/ScreenLink" app/main.swift app/Core.swift
+swiftc -O -o "$BUILD/ScreenLink" app/main.swift app/Core.swift app/Panel.swift
 
 echo "==> 生成图标"
 swiftc -O -o "$BUILD/genicon" icon/main.swift
