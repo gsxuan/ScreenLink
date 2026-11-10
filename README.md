@@ -1,20 +1,33 @@
+<div align="center">
+
+<img src="docs/icon.png" width="88" height="88" alt="ScreenLink" />
+
 # ScreenLink
 
-两台 Mac 的**屏保/锁屏联动**菜单栏应用：本机进入屏保，另一台同步进入；本机退出，另一台同步退出。
+**两台 Mac 的屏保 / 锁屏联动菜单栏应用。** 本机进屏保，另一台同步进；本机退出，另一台同步退出。
 
-用一台 Mac 的锁屏动作，同时锁住整个桌面环境——适合「主力机 + 副屏/工作机」的双机摆法，离开座位时不用两台各按一次。
+用一台 Mac 的锁屏动作锁住整个双机桌面——适合「主力机 + 副屏/工作机」，离开座位不用两台各按一次。
 
-![菜单栏图标](docs/icon.png)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple&logoColor=white)](#环境要求)
+[![Release](https://img.shields.io/github/v/release/gsxuan/ScreenLink?label=release&color=green)](https://github.com/gsxuan/ScreenLink/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/gsxuan/ScreenLink/total?label=downloads&color=brightgreen)](https://github.com/gsxuan/ScreenLink/releases)
 
-## 环境要求
+</div>
 
-- macOS 13 或更高（在 macOS 27 上开发验证）
-- 两台 Mac 处于同一局域网，**双向免密 SSH** 可用（主控 → 从动）
-- 从动端**不要开启「需要密码解锁」的强制锁屏**（`sysadminctl -screenLock status` 应为 `off`），否则远端只能进屏保、无法被程序化唤醒
+---
+
+## 快速开始
+
+从 [Releases](https://github.com/gsxuan/ScreenLink/releases/latest) 下载 `ScreenLink-<版本>.dmg`，双击挂载后把 ScreenLink 拖进窗口里的 `Applications` 快捷方式，两台机器各打开一次即可。首次打开若被 Gatekeeper 拦，右键 → 打开。
+
+装好后：**一台设为「主控」并填另一台的内网 IP，另一台设为「从动」**，主控端菜单里点「测试远端连接」确认免密 SSH 可用，联动即生效。
+
+想一条命令搞定安装与配置，见下方 [Agent 安装与配置](#agent-安装与配置)。
 
 ## 安装
 
-1. 从 [Releases](https://github.com/gsxuan/ScreenLink/releases/latest) 下载 `ScreenLink-<版本>.dmg`，双击挂载后把 ScreenLink 拖进窗口里的 `Applications` 快捷方式即装（也想用命令行就下 `ScreenLink-<版本>.zip`，解压后手动拖进 `/Applications`）
+1. 从 [Releases](https://github.com/gsxuan/ScreenLink/releases/latest) 下载 `ScreenLink-<版本>.dmg`（或 `ScreenLink-<版本>.zip`，解压后手动拖进 `/Applications`）
 2. 两台机器都打开一次（首次会被 Gatekeeper 拦，右键 → 打开）
 3. **主控端**：菜单 → 本机角色 → 主控；远端地址填另一台的内网 IP
 4. **从动端**：菜单 → 本机角色 → 从动
@@ -33,6 +46,12 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'   # 应输出 OK，且不询问密
 
 - **从动端**：首次拉起屏保时会请求「系统事件」自动化权限 → 点**允许**。若误点拒绝，到 `系统设置 → 隐私与安全性 → 自动化` 里勾选 ScreenLink。
 - **两端**：首次 SSH 出网会请求「本地网络」权限 → 点**允许**，否则连接会被拒（表现为 `rc=255`，日志里能看到）。
+
+## 环境要求
+
+- macOS 13 或更高（在 macOS 27 上开发验证，Apple Silicon / arm64）
+- 两台 Mac 处于同一局域网，**双向免密 SSH** 可用（主控 → 从动）
+- 从动端**不要开启「需要密码解锁」的强制锁屏**（`sysadminctl -screenLock status` 应为 `off`），否则远端只能进屏保、无法被程序化唤醒
 
 ## Agent 安装与配置
 
@@ -55,6 +74,14 @@ open -a ScreenLink
 ```
 
 从动机把 `role` 改成 `slave`、`peer` 留空即可。相关 skills：**coding-agent / claude-code / codex** 负责执行上面的安装配置；跨机免密与环境准备可交给 **ssh** skill。
+
+## 特性
+
+- **事件驱动、低延迟**——基于分布式通知与 FSEvents，不做轮询，进/出屏保同步 ≈ 140–350 ms
+- **主控 / 从动**双角色，逐项能力可单独开关（进屏保跟随、退屏保跟随、锁屏视同屏保、强制远端保持、活跃时阻止远端睡屏保……）
+- **被划掉也能拉回**——远端屏保被鼠标/键盘/通用控制打断时立即复拉，不裸露桌面
+- **菜单栏常驻、无 Dock 图标**，可一键隐藏图标后台运行；再点一次 App 图标即回来
+- 零第三方依赖：`swiftc` 直接编译，代码绘制图标，产出 DMG/ZIP
 
 ## 功能
 
@@ -93,30 +120,6 @@ open -a ScreenLink
 
 > 屏保被输入划掉时，系统必须销毁并重建屏保进程，这 ~0.15 s 是机制下限。若持续用「通用控制」推远端鼠标，会看到 0.3 s 级闪烁，属固有行为。
 
-## 从源码构建
-
-```bash
-git clone https://github.com/gsxuan/ScreenLink.git
-cd ScreenLink
-./build.sh                       # 产出 ScreenLink.app，并打包 dist/ScreenLink-<版本>.dmg 与 .zip
-cp -R ScreenLink.app /Applications/
-```
-
-`build.sh` 用 `swiftc` 直接编译，无第三方依赖：编译主程序 → 代码绘制图标 → 生成 `.icns` → 组装 bundle → ad-hoc 签名 → 打包 DMG/ZIP。
-
-## 打包与发布
-
-仓库**不跟踪构建产物**（`ScreenLink.app/`、`build/`、`dist/` 都在 `.gitignore` 里），二进制只通过 [Releases](https://github.com/gsxuan/ScreenLink/releases) 分发。
-
-一次 `./build.sh` 就会在 `dist/` 产出两个同名不同格式的安装包（版本号自动取自 `Info.plist` 的 `CFBundleShortVersionString`）：
-
-| 产物 | 生成方式 | 用途 |
-|---|---|---|
-| `ScreenLink-<版本>.dmg` | `hdiutil create -format UDZO`，内含 App + `/Applications` 快捷链接 | 主安装包，双击挂载拖拽即装 |
-| `ScreenLink-<版本>.zip` | `ditto -c -k --keepParent`（保留 bundle 结构，不产生 `__MACOSX`） | 备用，适合 `curl`/命令行部署 |
-
-发布步骤：打好 `vX.Y` 标签推到远端 → 在 Releases 建同名 release → 上传 `dist/` 下的 `.dmg` 与 `.zip`（资产名带版本号，README 安装说明按 `ScreenLink-<版本>.dmg` 写）。App 为 ad-hoc 签名、未做公证，首次打开需右键 → 打开。
-
 ## 工作原理
 
 ```
@@ -142,6 +145,45 @@ cp -R ScreenLink.app /Applications/
 - **主控端零 osascript**：新装的 App 第一次控制「系统事件」会同步等待授权弹窗，若在主控路径调用会把主线程锁死、通知全收不到。主控只用 `pgrep` / `ioreg` / `CGDisplayIsAsleep` 判断状态。
 - **单实例 + 重新打开即恢复图标**：靠 `/tmp/screenlink-app.lock` 的 `flock`；第二个实例启动时不抢占，而是发一个分布式通知让前台实例把菜单栏图标显示出来，然后自己退出。
 
+## 从源码构建
+
+```bash
+git clone https://github.com/gsxuan/ScreenLink.git
+cd ScreenLink
+./build.sh                       # 产出 ScreenLink.app，并打包 dist/ScreenLink-<版本>.dmg 与 .zip
+cp -R ScreenLink.app /Applications/
+```
+
+`build.sh` 用 `swiftc` 直接编译，无第三方依赖：编译主程序 → 代码绘制图标 → 生成 `.icns` → 组装 bundle → ad-hoc 签名 → 打包 DMG/ZIP。
+
+## 项目结构
+
+```
+ScreenLink/
+├── app/                # 应用源码
+│   ├── main.swift       # 菜单栏 UI（NSStatusItem / 菜单 / 弹框）
+│   ├── Core.swift       # 联动引擎（主控下发 / 从动看护 / 状态文件）
+│   └── Info.plist       # bundle 描述（LSUIElement、权限用途串、版本号）
+├── icon/main.swift      # 代码绘制应用图标（生成 icon-1024.png）
+├── docs/icon.png        # README 展示用图标
+├── build.sh             # 一键编译 + 打包 DMG/ZIP
+├── LICENSE              # Apache License 2.0
+└── README.md
+```
+
+## 打包与发布
+
+仓库**不跟踪构建产物**（`ScreenLink.app/`、`build/`、`dist/` 都在 `.gitignore` 里），二进制只通过 [Releases](https://github.com/gsxuan/ScreenLink/releases) 分发。
+
+一次 `./build.sh` 就会在 `dist/` 产出两个同名不同格式的安装包（版本号自动取自 `Info.plist` 的 `CFBundleShortVersionString`）：
+
+| 产物 | 生成方式 | 用途 |
+|---|---|---|
+| `ScreenLink-<版本>.dmg` | `hdiutil create -format UDZO`，内含 App + `/Applications` 快捷链接 | 主安装包，双击挂载拖拽即装 |
+| `ScreenLink-<版本>.zip` | `ditto -c -k --keepParent`（保留 bundle 结构，不产生 `__MACOSX`） | 备用，适合 `curl`/命令行部署 |
+
+发布步骤：打好 `vX.Y` 标签推到远端 → 在 Releases 建同名 release → 上传 `dist/` 下的 `.dmg` 与 `.zip`（资产名带版本号，README 安装说明按 `ScreenLink-<版本>.dmg` 写）。App 为 ad-hoc 签名、未做公证，首次打开需右键 → 打开。
+
 ## 配置与数据
 
 | 路径 | 内容 |
@@ -164,6 +206,10 @@ cp -R ScreenLink.app /Applications/
 
 **两台机器都设成了从动**
 没有任何一台会下发，联动不生效。至少一台要是主控。
+
+## 贡献
+
+Issues 与 PR 欢迎。改动源码后请先本地 `./build.sh` 验证能编译、产出 DMG/ZIP；构建产物不入库（见[打包与发布](#打包与发布)）。提交按功能逻辑拆分，信息说明改动动机。
 
 ## 许可证
 
