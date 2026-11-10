@@ -338,7 +338,18 @@ enum S {
     static func setWindow(_ key: String, _ v: String) {
         UserDefaults.standard.set(v, forKey: key + "Win")
     }
+    /// 「仅在时段生效」是否勾选；取消勾选不再清掉已配时段（WinOn 单独存），
+    /// 再勾回来还是原来填的时间。旧配置无 WinOn 时：有时段 = 勾选
+    static func windowEnabled(_ key: String) -> Bool {
+        let d = UserDefaults.standard
+        if d.object(forKey: key + "WinOn") != nil { return d.bool(forKey: key + "WinOn") }
+        return !window(key).isEmpty
+    }
+    static func setWindowEnabled(_ key: String, _ v: Bool) {
+        UserDefaults.standard.set(v, forKey: key + "WinOn")
+    }
     static func inWindow(_ key: String, now: Date = Date()) -> Bool {
+        guard windowEnabled(key) else { return true }
         let s = window(key)
         guard !s.isEmpty else { return true }
         guard let w = parseWindow(s) else { return true }   // 非法配置按全天处理

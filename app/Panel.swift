@@ -412,15 +412,24 @@ final class PanelController: NSObject, NSWindowDelegate {
                                    "role": S.role, "peer": S.peer]
         for k in PanelController.featureKeys {
             r[k] = UserDefaults.standard.bool(forKey: k) ? "on" : "off"
-            r[k + "Win"] = S.window(k)
+            r[k + "Win"] = S.windowEnabled(k) ? S.window(k) : ""
+            r[k + "WinOn"] = S.windowEnabled(k) ? "on" : "off"
         }
         return r
+    }
+
+    /// 对照表展示用的「生效时段」：未勾选/未配 = 空（全天）
+    private func effWin(_ s: [String: String], _ k: String) -> String {
+        let w = s[k + "Win"] ?? ""
+        guard !w.isEmpty else { return "" }
+        if let on = s[k + "WinOn"] { return on == "on" ? w : "" }
+        return w
     }
 
     private func displayValue(_ key: String, _ s: [String: String]) -> String {
         let v = s[key] ?? PanelController.defaultFor(key)
         if PanelController.featureKeys.contains(key) {
-            let w = s[key + "Win"] ?? ""
+            let w = effWin(s, key)
             return (v == "on" ? "开" : "关") + " · " + (w.isEmpty ? "全天" : w)
         }
         if key == "role" { return v == "master" ? "主控" : "从动" }
@@ -594,6 +603,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             for k in PanelController.featureKeys {
                 parts.append("defaults write com.think.screenlink.app \(k) -bool \(UserDefaults.standard.bool(forKey: k))")
                 parts.append("defaults write com.think.screenlink.app \(k)Win -string '\(S.window(k))'")
+                parts.append("defaults write com.think.screenlink.app \(k)WinOn -bool \(S.windowEnabled(k))")
             }
             parts.append("defaults write com.think.screenlink.app role -string \(S.role == "master" ? "slave" : "master")")
             if let ip = Self.localLANIP() {
@@ -620,6 +630,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         for k in PanelController.featureKeys {
             UserDefaults.standard.set(val(k) == "on", forKey: k)
             S.setWindow(k, rs[k + "Win"] ?? "")
+            let on: Bool
+            if let o = rs[k + "WinOn"] { on = o == "on" }
+            else { on = !(rs[k + "Win"] ?? "").isEmpty }   // 远端旧配置：有时段 = 勾选
+            S.setWindowEnabled(k, on)
         }
         // role / peer 不参与拉取：两机角色必须互补、peer 必须互指，拉过来就坏了
         appLog("panel: unify pull <- \(S.peer) done")
@@ -649,9 +663,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     fileprivate func windowToggled(_ key: String, _ on: Bool) {
-        let v = on ? (rowMap[key]?.defaultWindow() ?? "22:00-07:00") : ""
-        S.setWindow(key, v)
-        appLog("window(panel): \(key)=\(v.isEmpty ? "全天" : v)")
+        // 取消勾选只关 WinOn，不清已配时段：再勾回来还是原来填的时间
+        S.setWindowEnabled(key, on)
+        if on && parseWindow(S.window(key)) == nil {
+            S.setWindow(key, rowMap[key]?.defaultWindow() ?? "22:00-07:00")
+        }
+        appLog("window(panel): \(key) winOn=\(on) win=\(S.window(key).isEmpty ? "未配" : S.window(key))")
         Engine.shared.applySettingChange(keepAliveSync: false)
         rowMap[key]?.update()
         rebuildCompareGrid()
@@ -703,6 +720,9 @@ final class FeatureRow {
             p.locale = Locale(identifier: "en_GB")
             p.dateValue = Date()
             p.font = .systemFont(ofSize: 12)
+            // 失焦/回车即提交 action：否则点开关时编辑中的时间不会保存，
+            // 随后 update() 用已存值回写就把刚填的内容冲掉（属性在 cell 上）
+            p.cell?.sendsActionOnEndEditing = true
             p.translatesAutoresizingMaskIntoConstraints = false
             return p
         }
@@ -761,8 +781,9 @@ final class FeatureRow {
         enableBox.state = on ? .on : .off
 
         let w = S.window(key)
-        let hasWin = parseWindow(w) != nil
-        winCheck.state = hasWin ? .on : .off
+        let checked = S.windowEnabled(key)
+        let hasWin = checked && parseWindow(w) != nil
+        winCheck.state = checked ? .on : .off
 
         let inWin = S.inWindow(key)
         if !on { stateLabel.stringValue = "已关闭" }
@@ -771,8 +792,9 @@ final class FeatureRow {
         stateLabel.textColor = (on && inWin) ? .systemGreen : .secondaryLabelColor
 
         if hasWin, let win = parseWindow(w) {
-            setPicker(startPick, minuteOfDay: win.start)
-            setPicker(endPick, minuteOfDay: win.end)
+            // 正在编辑中的选择器不回写，否则刷新/开关通知会冲掉用户刚填的值
+            if startPick.currentEditor() == nil { setPicker(startPick, minuteOfDay: win.start) }
+            if endPick.currentEditor() == nil { setPicker(endPick, minuteOfDay: win.end) }
         }
         let controls: [NSControl] = [winCheck, startPick, endPick]
         for c in controls { c.target = nil }

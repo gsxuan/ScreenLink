@@ -201,7 +201,7 @@ ScreenLink/
 | `~/sscreenlink/` | 状态文件（`saver-wanted` / `force-hold` / `keep-awake` / `role` / `reload-settings`） |
 | `~/sscreenlink-app.log` → `/tmp/screenlink-app.log` | 运行日志，含 SSH 失败的 stderr 全文 |
 | `~/Library/LaunchAgents/com.think.screenlink.app.plist` | 勾选「登录时启动」后生成 |
-| `defaults read com.think.screenlink.app` | 所有开关的当前值；生效时间段存为 `<开关名>Win`（如 `holdRemoteWin = "22:00-07:00"`，缺省全天） |
+| `defaults read com.think.screenlink.app` | 所有开关的当前值；生效时间段存为 `<开关名>Win`（如 `holdRemoteWin = "22:00-07:00"`），是否启用该时段存为 `<开关名>WinOn`（取消勾选不清已配时段），缺省全天 |
 
 ## 常见问题
 
