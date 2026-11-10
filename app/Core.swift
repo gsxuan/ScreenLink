@@ -323,6 +323,7 @@ final class Engine {
     private var lastAsleep: Bool?
     private var lastWant: Bool?
     private var lastSpawn = Date.distantPast
+    private var lastForcedSpawn = Date.distantPast
     private var healthInFlight = false
 
     /// UI 刷新回调（主线程）
@@ -423,6 +424,11 @@ final class Engine {
     }
 
     private func masterKeepAwakeTick(peer: String) {
+        // 兜底重发：本机仍在屏保且开了强制保持 → 每 20s 重新断言远端意图
+        // （防远端 App 重启/文件被误删导致的失联）
+        if localActive && S.holdRemote && S.syncEnter {
+            sshShell(peer, "touch '\(STATE_SAVER)' '\(STATE_FORCE)'")
+        }
         guard S.keepAwake else {
             // 开关关掉后要确保远端释放保活，否则远端再也不会自己进屏保
             sshShell(peer, "rm -f '\(STATE_KEEP)' '\(FILE_HB)'")
@@ -499,6 +505,25 @@ final class Engine {
             appLog("slave: WARN cannot watch \(DIR_PATH); fallback to 1s poll")
         }
 
+        // 关键：屏保被真实输入（鼠标/键盘/通用控制）划掉的瞬间立即拉回，
+        // 不等轮询——否则远端会裸露出桌面好几秒。
+        let dnc = DistributedNotificationCenter.default()
+        for n in ["com.apple.screensaver.didstop", "com.apple.screenIsUnlocked",
+                  "com.apple.sessionagent.screenIsUnlocked"] {
+            observers.append(dnc.addObserver(forName: NSNotification.Name(n), object: nil, queue: nil) { [weak self] _ in
+                guard let self = self else { return }
+                // master 主动收起时 saver-wanted 已被删除，这里自然跳过
+                guard fileExists(STATE_SAVER) else { return }
+                guard fileExists(STATE_FORCE) || S.forceHold else { return }
+                let now = Date()
+                guard now.timeIntervalSince(self.lastForcedSpawn) > 0.4 else { return }  // 防抖
+                self.lastForcedSpawn = now
+                self.lastSpawn = now
+                appLog("slave: dismissed by input -> re-assert saver now")
+                q.async { spawnSaverAsync() }
+            })
+        }
+
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.tick += 1
@@ -506,7 +531,8 @@ final class Engine {
             // 强制保持：主控下发的 force-hold 优先，或本机开关开启
             // 意图存在但引擎被真实输入（UC/远程桌面）划掉 → 复拉
             let forced = fileExists(STATE_FORCE) || S.forceHold
-            if self.tick % 2 == 0 && forced && fileExists(STATE_SAVER) && !self.healthInFlight {
+            let masterForced = fileExists(STATE_FORCE)            // 强制期间每个 tick（1s）都查；本地开关只做 2s 一次，省 osascript
+            if (masterForced || self.tick % 2 == 0) && forced && fileExists(STATE_SAVER) && !self.healthInFlight {
                 self.healthInFlight = true
                 DispatchQueue.global(qos: .utility).async {
                     let running = screensaverRunning()

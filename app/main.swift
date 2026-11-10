@@ -6,9 +6,14 @@ import AppKit
 import Darwin
 
 // MARK: - 单实例锁
+// 已有实例在跑时，不静默退出，而是让它把菜单栏图标显示出来（= 用户又点了一次 App）。
+let SHOW_NOTIFICATION = "com.think.screenlink.show"
+let HIDE_NOTIFICATION = "com.think.screenlink.hide"
 let lockFD = open("/tmp/screenlink-app.lock", O_CREAT | O_RDWR, 0o644)
 if lockFD >= 0 && flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
-    // 已有实例在跑，安静退出
+    DistributedNotificationCenter.default().postNotificationName(
+        NSNotification.Name(SHOW_NOTIFICATION), object: nil, userInfo: nil, deliverImmediately: true)
+    usleep(250_000)   // 留出投递时间，确保前台实例收到
     exit(0)
 }
 
@@ -71,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var remoteText = "检测中…"
     var probing = false
+    var statusHidden = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -79,7 +85,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Engine.shared.onChange = { [weak self] in self?.refresh() }
         Engine.shared.restart()
         refresh()
+
+        // 再次打开 App（已有实例在跑）→ 重新显示菜单栏图标
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(SHOW_NOTIFICATION), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.showStatusItem()
+        }
+        // 反向：允许外部/脚本把它收进后台
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(HIDE_NOTIFICATION), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.hideStatusItem()
+        }
+
         appLog("APP launch pid=\(ProcessInfo.processInfo.processIdentifier) role=\(S.role) peer=\(S.peer)")
+    }
+
+    // 用户再次点开 App（open -a / 双击 / Spotlight）时，macOS 会给运行中的实例发 reopen
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showStatusItem()
+        return false
+    }
+
+    // MARK: 菜单栏 显示 / 隐藏
+    func hideStatusItem() {
+        guard let item = statusItem else { return }
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+        statusHidden = true
+        appLog("menu bar: hidden (running in background, relaunch app to bring it back)")
+    }
+
+    func showStatusItem() {
+        guard statusItem == nil else { return }   // 已显示则无需处理
+        buildStatusItem()
+        statusHidden = false
+        refresh()
+        appLog("menu bar: shown (app reopened)")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -95,6 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func updateIcon() {
+        // 图标被隐藏（后台运行）时不做任何绘制，避免空引用
+        guard let button = statusItem?.button else { return }
         let img = NSImage(size: NSSize(width: 22, height: 18), flipped: false) { _ in
             let on = S.enabled
             let active = Engine.shared.localActive && on
@@ -134,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return true
         }
         img.isTemplate = true
-        statusItem.button?.image = img
+        button.image = img
     }
 
     // MARK: 菜单构建
@@ -181,7 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ---- 从动行为
         let slaveMenu = NSMenu()
-        syncItems["forceHold"] = makeToggle("强制保持远端屏保（被划掉自动恢复）", key: "forceHold",
+        syncItems["forceHold"] = makeToggle("强制保持本机屏保（被划掉自动恢复）", key: "forceHold",
                                             symbol: "arrow.clockwise", in: slaveMenu)
         syncItems["wakeDisplay"] = makeToggle("退出时唤醒远端显示器", key: "wakeDisplay",
                                               symbol: "sun.max", in: slaveMenu)
@@ -240,6 +285,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let hideItem = NSMenuItem(title: "隐藏菜单栏图标（后台继续运行）",
+                                  action: #selector(hideMenuBar), keyEquivalent: "")
+        hideItem.target = self
+        hideItem.image = symbol("eye.slash")
+        menu.addItem(hideItem)
+
         let quit = NSMenuItem(title: "退出 ScreenLink", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         quit.image = symbol("xmark.circle")
@@ -292,7 +343,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if fileExists(STATE_FORCE) { parts.append("强制远端保持中") }
         if displayAsleep() { parts.append("显示器已休眠") }
         if fileExists(STATE_KEEP) { parts.append("保活中") }
-        if Engine.shared.mode == "slave" && fileExists(STATE_SAVER) { parts.append("远端要求屏保") }
+        if Engine.shared.mode == "slave" && fileExists(STATE_SAVER) { parts.append("主控要求屏保") }
+        if Engine.shared.mode == "slave" && fileExists(STATE_FORCE) { parts.append("主控强制保持") }
         if let t = Engine.shared.lastRemoteSync, Date().timeIntervalSince(t) < 6 {
             parts.append("刚刚同步")
         }
@@ -433,6 +485,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
+    @objc func hideMenuBar() {
+        let firstTime = !UserDefaults.standard.bool(forKey: "hideHintShown")
+        hideStatusItem()
+        if firstTime {
+            UserDefaults.standard.set(true, forKey: "hideHintShown")
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "已隐藏菜单栏图标"
+            alert.informativeText = "屏保联动仍在后台运行，两台机器照常同步。\n\n想重新显示图标：再点一次 ScreenLink 即可（访达 / 启动台 / Spotlight / 程序坞都行）。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
+    }
+
     @objc func openLog() {
         if !FileManager.default.fileExists(atPath: APP_LOG_PATH) {
             touchFile(APP_LOG_PATH)
@@ -443,7 +509,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "ScreenLink 3.0"
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.1"
+        alert.messageText = "ScreenLink \(ver)"
         alert.informativeText = """
         两台 Mac 屏保联动。
 
