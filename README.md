@@ -61,7 +61,7 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'   # 应输出 OK，且不询问密
 
 ```bash
 # 主控示例：把 peer 换成从动机的内网 IP（curl 下载不带隔离属性，通常无需右键绕过 Gatekeeper）
-VER=3.1
+VER=3.2
 curl -fL -o /tmp/ScreenLink.dmg "https://github.com/gsxuan/ScreenLink/releases/download/v${VER}/ScreenLink-${VER}.dmg"
 hdiutil attach /tmp/ScreenLink.dmg -nobrowse -mountpoint /Volumes/ScreenLink
 cp -R /Volumes/ScreenLink/ScreenLink.app /Applications/
@@ -70,6 +70,9 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'          # 免密前置校验，�
 defaults write com.think.screenlink.app enabled -bool true
 defaults write com.think.screenlink.app role    -string master
 defaults write com.think.screenlink.app peer    -string 10.1.1.2
+# 可选：给单个开关配生效时间段（HH:mm-HH:mm，结束早于开始 = 跨午夜；不配 = 全天）
+defaults write com.think.screenlink.app holdRemoteWin -string '22:00-07:00'   # 强制远端保持仅夜间生效
+defaults write com.think.screenlink.app keepAwakeWin  -string '09:00-18:00'   # 阻止远端屏保仅工作时间生效
 open -a ScreenLink
 ```
 
@@ -79,6 +82,7 @@ open -a ScreenLink
 
 - **事件驱动、低延迟**——基于分布式通知与 FSEvents，不做轮询，进/出屏保同步 ≈ 140–350 ms
 - **主控 / 从动**双角色，逐项能力可单独开关（进屏保跟随、退屏保跟随、锁屏视同屏保、强制远端保持、活跃时阻止远端睡屏保……）
+- **每个开关可单独配生效时间段**——如「强制远端保持」仅 22:00–07:00 生效，支持跨午夜，其余时间视同关闭；穿越窗口边界自动重对齐两端状态
 - **被划掉也能拉回**——远端屏保被鼠标/键盘/通用控制打断时立即复拉，不裸露桌面
 - **菜单栏常驻、无 Dock 图标**，可一键隐藏图标后台运行；再点一次 App 图标即回来
 - 零第三方依赖：`swiftc` 直接编译，代码绘制图标，产出 DMG/ZIP
@@ -105,6 +109,7 @@ open -a ScreenLink
 **其它**
 
 - 菜单栏常驻图标，无 Dock 图标；顶部实时显示「本机状态 / 远端状态」
+- **每个开关都可配生效时间段**：在「主控行为 / 从动行为」子菜单底部的「生效时间」区块逐项设置（默认全天），格式 `HH:mm-HH:mm`，结束早于开始视为跨午夜（如 `22:00-07:00`）。窗口外该开关视同关闭；主控每 30s 检查一次窗口边界，穿越时自动重对齐两端状态（如离开窗口时清掉远端残留的 `force-hold`、释放保活）
 - **隐藏菜单栏图标**：菜单里选「隐藏菜单栏图标（后台继续运行）」，图标收起但联动照常工作；**再点一次 App（访达 / 启动台 / Spotlight）图标就回来**
 - 一键测试远端连接、远端地址可改、登录时自动启动
 
@@ -191,7 +196,7 @@ ScreenLink/
 | `~/sscreenlink/` | 状态文件（`saver-wanted` / `force-hold` / `keep-awake` / `role`） |
 | `~/sscreenlink-app.log` → `/tmp/screenlink-app.log` | 运行日志，含 SSH 失败的 stderr 全文 |
 | `~/Library/LaunchAgents/com.think.screenlink.app.plist` | 勾选「登录时启动」后生成 |
-| `defaults read com.think.screenlink.app` | 所有开关的当前值 |
+| `defaults read com.think.screenlink.app` | 所有开关的当前值；生效时间段存为 `<开关名>Win`（如 `holdRemoteWin = "22:00-07:00"`，缺省全天） |
 
 ## 常见问题
 

@@ -68,6 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var remoteStateItem: NSMenuItem!
     var enableItem: NSMenuItem!
     var syncItems: [String: NSMenuItem] = [:]      // key -> item
+    var winItems: [String: NSMenuItem] = [:]       // key -> 生效时间菜单项
+    var winTitles: [String: String] = [:]          // key -> 开关显示名
     var roleItems: [String: NSMenuItem] = [:]
     var loginItem: NSMenuItem!
     var testItem: NSMenuItem!
@@ -218,6 +220,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                              symbol: "lock", in: syncMenu)
         syncItems["keepAwake"] = makeToggle("本机活跃时阻止远端进屏保", key: "keepAwake",
                                            symbol: "eye", in: syncMenu)
+        addWindowSection(to: syncMenu, keys: [
+            ("syncEnter", "进屏保跟随"),
+            ("holdRemote", "强制远端保持"),
+            ("syncExit", "退屏保跟随"),
+            ("lockAsSaver", "锁屏视同屏保"),
+            ("keepAwake", "阻止远端屏保"),
+        ])
         let syncRoot = NSMenuItem(title: "主控行为", action: nil, keyEquivalent: "")
         syncRoot.image = symbol("slider.horizontal.3")
         syncRoot.submenu = syncMenu
@@ -230,6 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                             symbol: "arrow.clockwise", in: slaveMenu)
         syncItems["wakeDisplay"] = makeToggle("退出时唤醒远端显示器", key: "wakeDisplay",
                                               symbol: "sun.max", in: slaveMenu)
+        addWindowSection(to: slaveMenu, keys: [
+            ("forceHold", "强制保持屏保"),
+            ("wakeDisplay", "退出唤醒显示器"),
+        ])
         let slaveRoot = NSMenuItem(title: "从动行为", action: nil, keyEquivalent: "")
         slaveRoot.image = symbol("slider.horizontal.3")
         slaveRoot.submenu = slaveMenu
@@ -312,6 +325,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return it
     }
 
+    /// 在子菜单里追加「生效时间」区块：每个开关一项，点击弹框配时间段
+    func addWindowSection(to target: NSMenu, keys: [(key: String, title: String)]) {
+        target.addItem(.separator())
+        let head = NSMenuItem(title: "生效时间（时段内才启用）", action: nil, keyEquivalent: "")
+        head.isEnabled = false
+        target.addItem(head)
+        for (key, title) in keys {
+            winTitles[key] = title
+            let it = NSMenuItem(title: title, action: #selector(editWindow(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = key
+            it.image = symbol("clock")
+            target.addItem(it)
+            winItems[key] = it
+        }
+    }
+
     // MARK: 刷新
     func refresh() {
         let isMaster = S.role == "master"
@@ -326,6 +356,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for (key, item) in syncItems {
             item.state = UserDefaults.standard.bool(forKey: key) ? .on : .off
             if S.enabled == false { item.isEnabled = false } else { item.isEnabled = true }
+        }
+        for (key, item) in winItems {
+            let w = S.window(key)
+            let win = w.isEmpty ? "全天" : w.replacingOccurrences(of: "-", with: "–")
+            item.title = "\(winTitles[key] ?? key)：\(win)"
+            item.isEnabled = S.enabled
         }
         for (_, it) in roleItems { it.state = .off }
         roleItems[S.role]?.state = .on
@@ -408,9 +444,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let key = sender.representedObject as? String else { return }
         let v = !UserDefaults.standard.bool(forKey: key)
         UserDefaults.standard.set(v, forKey: key)
-        appLog("switch: \(key)=\(v)")
+        appLog("switch: \(key)=\(v) win=\(S.window(key).isEmpty ? "全天" : S.window(key))")
         sender.state = v ? .on : .off
         Engine.shared.applySettingChange()
+        refresh()
+    }
+
+    @objc func editWindow(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let cur = S.window(key)
+        let parts = cur.isEmpty ? [] : cur.split(separator: "-", maxSplits: 1).map(String.init)
+
+        let alert = NSAlert()
+        alert.messageText = "生效时间 · \(winTitles[key] ?? key)"
+        alert.informativeText = "仅在时间段内启用该功能，其余时间视同关闭。\n格式 HH:mm（如 09:00）；结束早于开始 = 跨午夜（如 22:00–07:00）。"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+
+        let check = NSButton(checkboxWithTitle: "仅在以下时间段生效", target: nil, action: nil)
+        check.state = cur.isEmpty ? .off : .on
+        let startF = NSTextField(frame: NSRect(x: 0, y: 0, width: 64, height: 24))
+        startF.stringValue = parts.count == 2 ? parts[0] : "22:00"
+        startF.placeholderString = "HH:mm"
+        startF.alignment = .center
+        let endF = NSTextField(frame: NSRect(x: 0, y: 0, width: 64, height: 24))
+        endF.stringValue = parts.count == 2 ? parts[1] : "07:00"
+        endF.placeholderString = "HH:mm"
+        endF.alignment = .center
+
+        let row = NSStackView(views: [startF, NSTextField(labelWithString: "至"), endF])
+        row.orientation = .horizontal
+        row.spacing = 8
+        let box = NSStackView(views: [check, row])
+        box.orientation = .vertical
+        box.alignment = .leading
+        box.spacing = 10
+        box.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+        alert.accessoryView = box
+        alert.window.initialFirstResponder = check
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var v = ""
+        if check.state == .on {
+            let a = startF.stringValue.trimmingCharacters(in: .whitespaces)
+            let b = endF.stringValue.trimmingCharacters(in: .whitespaces)
+            guard parseTimeOfDay(a) != nil, parseTimeOfDay(b) != nil else {
+                let bad = NSAlert()
+                bad.messageText = "时间格式不正确"
+                bad.informativeText = "请用 HH:mm 格式（如 09:00、22:30），时 0–23、分 0–59。"
+                bad.runModal()
+                return
+            }
+            let am = parseTimeOfDay(a)!
+            let bm = parseTimeOfDay(b)!
+            guard am != bm else {
+                let bad = NSAlert()
+                bad.messageText = "开始与结束不能相同"
+                bad.informativeText = "相同时间没有意义；想全天生效请取消勾选「仅在以下时间段生效」。"
+                bad.runModal()
+                return
+            }
+            v = "\(a)-\(b)"
+        }
+        S.setWindow(key, v)
+        appLog("window: \(key)=\(v.isEmpty ? "全天" : v)")
+        Engine.shared.applySettingChange(keepAliveSync: false)
         refresh()
     }
 

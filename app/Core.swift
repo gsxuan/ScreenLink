@@ -246,6 +246,32 @@ func sshShell(_ peer: String, _ cmd: String) {
     }
 }
 
+// MARK: - 生效时间窗
+// 每个功能开关都可配一个生效时间段（默认全天）。
+// 存储格式 "HH:mm-HH:mm"；空串 = 全天生效；支持跨午夜（如 "22:00-07:00"）。
+func parseTimeOfDay(_ s: String) -> Int? {
+    let parts = s.split(separator: ":")
+    guard parts.count == 2,
+          let h = Int(parts[0]), let m = Int(parts[1]),
+          (0...23).contains(h), (0...59).contains(m) else { return nil }
+    return h * 60 + m
+}
+
+func parseWindow(_ s: String) -> (start: Int, end: Int)? {
+    let parts = s.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2,
+          let a = parseTimeOfDay(String(parts[0]).trimmingCharacters(in: .whitespaces)),
+          let b = parseTimeOfDay(String(parts[1]).trimmingCharacters(in: .whitespaces)),
+          a != b else { return nil }
+    return (a, b)
+}
+
+/// 某时刻是否落在窗口内；end <= start 视为跨午夜
+func minuteInWindow(_ w: (start: Int, end: Int), minuteOfDay: Int) -> Bool {
+    if w.start < w.end { return minuteOfDay >= w.start && minuteOfDay < w.end }
+    return minuteOfDay >= w.start || minuteOfDay < w.end
+}
+
 // MARK: - 设置
 enum S {
     static func register() {
@@ -303,6 +329,35 @@ enum S {
         get { UserDefaults.standard.bool(forKey: "wakeDisplay") }
         set { UserDefaults.standard.set(newValue, forKey: "wakeDisplay") }
     }
+
+    // MARK: 生效时间窗（每开关一个 "<key>Win"，空串 = 全天）
+    static func window(_ key: String) -> String {
+        UserDefaults.standard.string(forKey: key + "Win") ?? ""
+    }
+    static func setWindow(_ key: String, _ v: String) {
+        UserDefaults.standard.set(v, forKey: key + "Win")
+    }
+    static func inWindow(_ key: String, now: Date = Date()) -> Bool {
+        let s = window(key)
+        guard !s.isEmpty else { return true }
+        guard let w = parseWindow(s) else { return true }   // 非法配置按全天处理
+        let min = Calendar.current.component(.hour, from: now) * 60
+                + Calendar.current.component(.minute, from: now)
+        return minuteInWindow(w, minuteOfDay: min)
+    }
+    /// 开关打开且处于生效时间窗内
+    static func eff(_ key: String) -> Bool {
+        UserDefaults.standard.bool(forKey: key) && inWindow(key)
+    }
+
+    // 各开关的「生效值」（= 开关 && 时间窗），引擎一律读这里
+    static var effSyncEnter: Bool   { eff("syncEnter") }
+    static var effSyncExit: Bool    { eff("syncExit") }
+    static var effLockAsSaver: Bool { eff("lockAsSaver") }
+    static var effKeepAwake: Bool   { eff("keepAwake") }
+    static var effHoldRemote: Bool  { eff("holdRemote") }
+    static var effForceHold: Bool   { eff("forceHold") }
+    static var effWakeDisplay: Bool { eff("wakeDisplay") }
 }
 
 // MARK: - 引擎
@@ -322,6 +377,7 @@ final class Engine {
     private var lastSynced: Bool?
     private var lastAsleep: Bool?
     private var lastWant: Bool?
+    private var lastWinState: Bool?
     private var lastSpawn = Date.distantPast
     private var lastForcedSpawn = Date.distantPast
     private var healthInFlight = false
@@ -368,15 +424,19 @@ final class Engine {
         lastSynced = nil
         lastWant = nil
         lastAsleep = nil
+        lastWinState = nil
         tick = 0
     }
 
     /// 开关变化后立即生效（不重启引擎）：主控重发一次当前目标态 + 保活态
-    func applySettingChange() {
+    /// keepAliveSync = 重发 keep-awake/heartbeat（改时间窗时不能传 true：
+    /// 窗口内每 20s touch 心跳，窗口外不碰，否则会伪造「本机在场」）
+    func applySettingChange(keepAliveSync: Bool = true) {
         guard S.enabled, mode == "master" else { return }
         lastSynced = nil
+        lastWinState = nil
         syncTarget()
-        masterKeepAwakeTick(peer: S.peer)
+        masterKeepAwakeTick(peer: S.peer, resyncKeep: keepAliveSync)
     }
 
     // MARK: 主控
@@ -387,6 +447,7 @@ final class Engine {
         lastAsleep = displayAsleep()
         localActive = saverProcessAlive() || lastAsleep! || sessionLocked()
         lastSynced = nil          // 强制首次对齐（同时清理远端残留意图）
+        lastWinState = nil
         syncTarget()
 
         let dnc = DistributedNotificationCenter.default()
@@ -396,7 +457,7 @@ final class Engine {
             let isLock = n.contains("Locked")
             observers.append(dnc.addObserver(forName: NSNotification.Name(n), object: nil, queue: nil) { [weak self] _ in
                 guard let self = self else { return }
-                if isLock && !S.lockAsSaver { return }   // 锁屏同步可单独关掉
+                if isLock && !S.effLockAsSaver { return }   // 锁屏同步可单独关掉/配时间窗
                 self.setActive(true)
             })
         }
@@ -418,20 +479,35 @@ final class Engine {
                     self.setActive(asleep)
                 }
             }
+            // 生效时间窗边界穿越（30s 一次，分钟级窗口足够）→ 重对齐一次远端意图
+            if self.tick % 30 == 0 {
+                let w = S.effSyncEnter != S.effSyncExit
+                if let prev = self.lastWinState, prev != w {
+                    appLog("master: window boundary crossed -> resync")
+                    self.lastSynced = nil
+                    self.syncTarget()
+                    self.masterKeepAwakeTick(peer: peer, resyncKeep: true)
+                }
+                self.lastWinState = w
+            }
             guard self.tick % 20 == 1 else { return }
-            self.masterKeepAwakeTick(peer: peer)
+            self.masterKeepAwakeTick(peer: peer, resyncKeep: true)
         }
     }
 
-    private func masterKeepAwakeTick(peer: String) {
-        // 兜底重发：本机仍在屏保且开了强制保持 → 每 20s 重新断言远端意图
+    private func masterKeepAwakeTick(peer: String, resyncKeep: Bool) {
+        // 兜底重发：本机仍在屏保且强制保持在生效窗口内 → 每 20s 重新断言远端意图
         // （防远端 App 重启/文件被误删导致的失联）
-        if localActive && S.holdRemote && S.syncEnter {
+        if localActive && S.effHoldRemote && S.effSyncEnter {
             sshShell(peer, "touch '\(STATE_SAVER)' '\(STATE_FORCE)'")
         }
-        guard S.keepAwake else {
-            // 开关关掉后要确保远端释放保活，否则远端再也不会自己进屏保
-            sshShell(peer, "rm -f '\(STATE_KEEP)' '\(FILE_HB)'")
+        guard S.effKeepAwake else {
+            // 开关关掉或不在时间窗内 → 只在「刚从生效变不生效」时清理一次远端保活，
+            // 不能每 20s 都 rm heartbeat（否则从动本地刚 touch 的心跳会被抹掉，
+            // 远端自己的「主控离线自动释放」兜底也失效）
+            if resyncKeep {
+                sshShell(peer, "rm -f '\(STATE_KEEP)' '\(FILE_HB)'")
+            }
             return
         }
         // 本机是否「有人在场」：只看 HID 空闲时间（不调 osascript，避免 TCC 阻塞）
@@ -452,16 +528,17 @@ final class Engine {
         let peer = S.peer
         guard localActive != lastSynced else { return }
         if localActive {
-            guard S.syncEnter else { lastSynced = localActive; return }
-            // holdRemote：本机屏保期间要求远端「必须保持屏保」，从动侧会无条件复拉
-            let hold = S.holdRemote ? "touch '\(STATE_FORCE)'" : "rm -f '\(STATE_FORCE)'"
-            appLog("sync: local active -> \(peer) enter (hold=\(S.holdRemote))")
+            guard S.effSyncEnter else { lastSynced = localActive; return }
+            // holdRemote：本机屏保期间要求远端「必须保持屏保」，从动侧会无条件复拉；
+            // 不在生效时间窗内时顺手清掉远端残留的 force-hold
+            let hold = S.effHoldRemote ? "touch '\(STATE_FORCE)'" : "rm -f '\(STATE_FORCE)'"
+            appLog("sync: local active -> \(peer) enter (hold=\(S.effHoldRemote))")
             sshShell(peer, "touch '\(STATE_SAVER)'; \(hold)")
         } else {
-            guard S.syncExit else { lastSynced = localActive; return }
+            guard S.effSyncExit else { lastSynced = localActive; return }
             appLog("sync: local inactive -> \(peer) exit")
-            // 一次往返：置保活（若开）+ 清屏保意图 + 撤销强制保持
-            let keep = S.keepAwake ? "touch '\(STATE_KEEP)' '\(FILE_HB)'; " : ""
+            // 一次往返：置保活（若在生效窗口内）+ 清屏保意图 + 撤销强制保持
+            let keep = S.effKeepAwake ? "touch '\(STATE_KEEP)' '\(FILE_HB)'; " : ""
             sshShell(peer, "\(keep)rm -f '\(STATE_SAVER)' '\(STATE_FORCE)'")
         }
         lastSynced = localActive
@@ -487,7 +564,7 @@ final class Engine {
             } else {
                 appLog("slave: saver-wanted cleared -> collect")
                 collectSaverAsync()
-                if S.wakeDisplay { wakeDisplayAsync() }
+                if S.effWakeDisplay { wakeDisplayAsync() }
             }
             lastWant = want
             notify()
@@ -514,7 +591,7 @@ final class Engine {
                 guard let self = self else { return }
                 // master 主动收起时 saver-wanted 已被删除，这里自然跳过
                 guard fileExists(STATE_SAVER) else { return }
-                guard fileExists(STATE_FORCE) || S.forceHold else { return }
+                guard fileExists(STATE_FORCE) || S.effForceHold else { return }
                 let now = Date()
                 guard now.timeIntervalSince(self.lastForcedSpawn) > 0.4 else { return }  // 防抖
                 self.lastForcedSpawn = now
@@ -528,9 +605,9 @@ final class Engine {
             guard let self = self else { return }
             self.tick += 1
             q.async { reconcile() }
-            // 强制保持：主控下发的 force-hold 优先，或本机开关开启
+            // 强制保持：主控下发的 force-hold 优先，或本机开关开启且在生效时间窗内
             // 意图存在但引擎被真实输入（UC/远程桌面）划掉 → 复拉
-            let forced = fileExists(STATE_FORCE) || S.forceHold
+            let forced = fileExists(STATE_FORCE) || S.effForceHold
             let masterForced = fileExists(STATE_FORCE)            // 强制期间每个 tick（1s）都查；本地开关只做 2s 一次，省 osascript
             if (masterForced || self.tick % 2 == 0) && forced && fileExists(STATE_SAVER) && !self.healthInFlight {
                 self.healthInFlight = true
