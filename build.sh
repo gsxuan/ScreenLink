@@ -37,4 +37,23 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 echo "==> ad-hoc 签名"
 codesign --force --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
 
-echo "==> 完成：$(pwd)/$APP"
+echo "==> 打包 DMG + ZIP"
+VER=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")
+mkdir -p dist
+
+# DMG：内含 App + /Applications 快捷方式，拖拽即装
+STAGE="$BUILD/dmg-stage"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+rm -f "dist/ScreenLink-$VER.dmg"
+hdiutil create -volname ScreenLink -srcfolder "$STAGE" -ov -format UDZO "dist/ScreenLink-$VER.dmg" >/dev/null
+
+# ZIP：ditto 保留 bundle 结构，不产生 __MACOSX / 资源分叉
+rm -f "dist/ScreenLink-$VER.zip"
+ditto -c -k --keepParent "$APP" "dist/ScreenLink-$VER.zip"
+
+hdiutil verify "dist/ScreenLink-$VER.dmg" >/dev/null && echo "==> DMG 校验通过"
+shasum -a 256 "dist/ScreenLink-$VER.dmg" "dist/ScreenLink-$VER.zip"
+
+echo "==> 完成：$(pwd)/$APP（产物见 dist/）"

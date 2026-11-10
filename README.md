@@ -51,7 +51,7 @@
 
 ## 安装
 
-1. 从 [Releases](https://github.com/gsxuan/ScreenLink/releases/latest) 下载 `ScreenLink.app.zip`，解压后拖进 `/Applications`
+1. 从 [Releases](https://github.com/gsxuan/ScreenLink/releases/latest) 下载 `ScreenLink-<版本>.dmg`，双击挂载后把 ScreenLink 拖进窗口里的 `Applications` 快捷方式即装（也想用命令行就下 `ScreenLink-<版本>.zip`，解压后手动拖进 `/Applications`）
 2. 两台机器都打开一次（首次会被 Gatekeeper 拦，右键 → 打开）
 3. **主控端**：菜单 → 本机角色 → 主控；远端地址填另一台的内网 IP
 4. **从动端**：菜单 → 本机角色 → 从动
@@ -76,27 +76,24 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'   # 应输出 OK，且不询问密
 ```bash
 git clone https://github.com/gsxuan/ScreenLink.git
 cd ScreenLink
-./build.sh                       # 产出 ScreenLink.app
+./build.sh                       # 产出 ScreenLink.app，并打包 dist/ScreenLink-<版本>.dmg 与 .zip
 cp -R ScreenLink.app /Applications/
 ```
 
-`build.sh` 用 `swiftc` 直接编译，无第三方依赖：编译主程序 → 代码绘制图标 → 生成 `.icns` → 组装 bundle → ad-hoc 签名。
+`build.sh` 用 `swiftc` 直接编译，无第三方依赖：编译主程序 → 代码绘制图标 → 生成 `.icns` → 组装 bundle → ad-hoc 签名 → 打包 DMG/ZIP。
 
 ## 打包与发布
 
-仓库**不跟踪构建产物**（`ScreenLink.app/`、`build/`、`dist/` 都在 `.gitignore` 里），二进制只通过 [Releases](https://github.com/gsxuan/ScreenLink/releases) 分发：
+仓库**不跟踪构建产物**（`ScreenLink.app/`、`build/`、`dist/` 都在 `.gitignore` 里），二进制只通过 [Releases](https://github.com/gsxuan/ScreenLink/releases) 分发。
 
-```bash
-./build.sh
-mkdir -p dist
-VER=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' ScreenLink.app/Contents/Info.plist)
-rm -f dist/ScreenLink-*.zip
-# ditto 保留 bundle 结构与权限，不产生 __MACOSX / 资源分叉
-ditto -c -k --keepParent ScreenLink.app "dist/ScreenLink-$VER.zip"
-shasum -a 256 dist/*.zip
-```
+一次 `./build.sh` 就会在 `dist/` 产出两个同名不同格式的安装包（版本号自动取自 `Info.plist` 的 `CFBundleShortVersionString`）：
 
-发布步骤：打好 `vX.Y` 标签推到远端 → 在 Releases 建同名 release → 上传 `dist/ScreenLink-X.Y.zip`（资产名固定用 `ScreenLink.app.zip`，README 的安装说明按这个名字写）。App 为 ad-hoc 签名、未做公证，首次打开需右键 → 打开。
+| 产物 | 生成方式 | 用途 |
+|---|---|---|
+| `ScreenLink-<版本>.dmg` | `hdiutil create -format UDZO`，内含 App + `/Applications` 快捷链接 | 主安装包，双击挂载拖拽即装 |
+| `ScreenLink-<版本>.zip` | `ditto -c -k --keepParent`（保留 bundle 结构，不产生 `__MACOSX`） | 备用，适合 `curl`/命令行部署 |
+
+发布步骤：打好 `vX.Y` 标签推到远端 → 在 Releases 建同名 release → 上传 `dist/` 下的 `.dmg` 与 `.zip`（资产名带版本号，README 安装说明按 `ScreenLink-<版本>.dmg` 写）。App 为 ad-hoc 签名、未做公证，首次打开需右键 → 打开。
 
 ## 工作原理
 
