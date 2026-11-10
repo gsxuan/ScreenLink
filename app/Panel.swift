@@ -45,7 +45,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         ("keepAwake",   "本机活跃时阻止远端进屏保", "本机有人在用，远端不会自己睡进屏保"),
     ]
     static let slaveFeatureList: [(String, String, String)] = [
-        ("forceHold",   "强制保持本机屏保",         "屏保被划掉时自动恢复（主控下发时以主控为准）"),
+        ("forceHold",   "强制保持本机屏保",         "被划掉自动恢复；主控在线时以主控「强制远端保持」（含时间窗）为准，本开关仅主控离线时兜底"),
         ("wakeDisplay", "退出时唤醒远端显示器",     "退出屏保时把显示器叫醒"),
     ]
 

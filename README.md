@@ -61,7 +61,7 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'   # 应输出 OK，且不询问密
 
 ```bash
 # 主控示例：把 peer 换成从动机的内网 IP（curl 下载不带隔离属性，通常无需右键绕过 Gatekeeper）
-VER=3.4
+VER=3.5
 curl -fL -o /tmp/ScreenLink.dmg "https://github.com/gsxuan/ScreenLink/releases/download/v${VER}/ScreenLink-${VER}.dmg"
 hdiutil attach /tmp/ScreenLink.dmg -nobrowse -mountpoint /Volumes/ScreenLink
 cp -R /Volumes/ScreenLink/ScreenLink.app /Applications/
@@ -96,14 +96,14 @@ open -a ScreenLink
 | 进入屏保时远端跟随 | 本机进屏保 → 远端同时进屏保 |
 | 退出屏保时远端跟随 | 本机退屏保 → 远端自动退出 |
 | 锁屏视同进入屏保 | 直接锁屏（不跑屏保）也触发远端进入 |
-| 本机屏保时强制远端保持 | 远端屏保被鼠标/键盘/通用控制划掉时**立即拉回**，不裸露桌面 |
+| 本机屏保时强制远端保持 | 远端屏保被鼠标/键盘/通用控制划掉时**立即拉回**，不裸露桌面；可配生效时间窗，窗口外远端屏保可正常划掉 |
 | 本机活跃时阻止远端进屏保 | 本机有人在用，远端不会自己睡进屏保 |
 
 **从动（slave）** — 被动看护，不发任何主动连接：
 
 | 开关 | 说明 |
 |---|---|
-| 强制保持本机屏保 | 屏保被划掉时自动恢复（主控下发时以主控为准） |
+| 强制保持本机屏保 | 屏保被划掉时自动恢复；主控在线同步期间以主控的「本机屏保时强制远端保持」（含其时间窗）为准，本开关仅在主控离线/失联时兜底 |
 | 退出时唤醒远端显示器 | 退出屏保时把显示器叫醒 |
 
 **其它**

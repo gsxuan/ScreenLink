@@ -506,10 +506,12 @@ final class Engine {
     }
 
     private func masterKeepAwakeTick(peer: String, resyncKeep: Bool) {
-        // 兜底重发：本机仍在屏保且强制保持在生效窗口内 → 每 20s 重新断言远端意图
-        // （防远端 App 重启/文件被误删导致的失联）
-        if localActive && S.effHoldRemote && S.effSyncEnter {
-            sshShell(peer, "touch '\(STATE_SAVER)' '\(STATE_FORCE)'")
+        // 兜底重发：本机屏保且进屏保同步生效 → 每 20s 重断言远端意图
+        // （防远端 App 重启/文件被误删导致的失联）；STATE_FORCE 跟随强制保持窗口：
+        // 窗口外主动 rm，且 saver-wanted 的 mtime 作为从动侧「主控在线」的证据
+        if localActive && S.effSyncEnter {
+            let hold = S.effHoldRemote ? "touch '\(STATE_FORCE)'" : "rm -f '\(STATE_FORCE)'"
+            sshShell(peer, "touch '\(STATE_SAVER)'; \(hold)")
         }
         guard S.effKeepAwake else {
             // 开关关掉或不在时间窗内 → 只在「刚从生效变不生效」时清理一次远端保活，
@@ -553,6 +555,16 @@ final class Engine {
         }
         lastSynced = localActive
         lastRemoteSync = Date()
+    }
+
+    /// 是否应执行强制保持：主控下发的 force-hold 优先；
+    /// 本机开关只在主控离线/失联（saver-wanted 超 60s 没被续摸）时兜底——
+    /// 否则主控在线时以主控的「强制远端保持」（含其时间窗）为准，
+    /// 避免窗口外远端屏保仍被本机开关复拉、划不掉
+    private func holdEnforced() -> Bool {
+        if fileExists(STATE_FORCE) { return true }
+        guard S.effForceHold else { return false }
+        return !(fileExists(STATE_SAVER) && isFresh(STATE_SAVER, 60))
     }
 
     // MARK: 从动
@@ -601,7 +613,7 @@ final class Engine {
                 guard let self = self else { return }
                 // master 主动收起时 saver-wanted 已被删除，这里自然跳过
                 guard fileExists(STATE_SAVER) else { return }
-                guard fileExists(STATE_FORCE) || S.effForceHold else { return }
+                guard self.holdEnforced() else { return }
                 let now = Date()
                 guard now.timeIntervalSince(self.lastForcedSpawn) > 0.4 else { return }  // 防抖
                 self.lastForcedSpawn = now
@@ -615,10 +627,10 @@ final class Engine {
             guard let self = self else { return }
             self.tick += 1
             q.async { reconcile() }
-            // 强制保持：主控下发的 force-hold 优先，或本机开关开启且在生效时间窗内
+            // 强制保持：主控下发的 force-hold 优先；本机开关仅在主控失联时兜底
             // 意图存在但引擎被真实输入（UC/远程桌面）划掉 → 复拉
-            let forced = fileExists(STATE_FORCE) || S.effForceHold
-            let masterForced = fileExists(STATE_FORCE)            // 强制期间每个 tick（1s）都查；本地开关只做 2s 一次，省 osascript
+            let forced = self.holdEnforced()
+            let masterForced = fileExists(STATE_FORCE)            // 主控强制期间每个 tick（1s）都查；本地兜底只做 2s 一次，省 osascript
             if (masterForced || self.tick % 2 == 0) && forced && fileExists(STATE_SAVER) && !self.healthInFlight {
                 self.healthInFlight = true
                 DispatchQueue.global(qos: .utility).async {
