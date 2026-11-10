@@ -51,7 +51,7 @@
 
 ## 安装
 
-1. 从 [Releases](../../releases) 下载 `ScreenLink.app.zip`，解压后拖进 `/Applications`
+1. 从 [Releases](https://github.com/gsxuan/ScreenLink/releases/latest) 下载 `ScreenLink.app.zip`，解压后拖进 `/Applications`
 2. 两台机器都打开一次（首次会被 Gatekeeper 拦，右键 → 打开）
 3. **主控端**：菜单 → 本机角色 → 主控；远端地址填另一台的内网 IP
 4. **从动端**：菜单 → 本机角色 → 从动
@@ -81,6 +81,22 @@ cp -R ScreenLink.app /Applications/
 ```
 
 `build.sh` 用 `swiftc` 直接编译，无第三方依赖：编译主程序 → 代码绘制图标 → 生成 `.icns` → 组装 bundle → ad-hoc 签名。
+
+## 打包与发布
+
+仓库**不跟踪构建产物**（`ScreenLink.app/`、`build/`、`dist/` 都在 `.gitignore` 里），二进制只通过 [Releases](https://github.com/gsxuan/ScreenLink/releases) 分发：
+
+```bash
+./build.sh
+mkdir -p dist
+VER=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' ScreenLink.app/Contents/Info.plist)
+rm -f dist/ScreenLink-*.zip
+# ditto 保留 bundle 结构与权限，不产生 __MACOSX / 资源分叉
+ditto -c -k --keepParent ScreenLink.app "dist/ScreenLink-$VER.zip"
+shasum -a 256 dist/*.zip
+```
+
+发布步骤：打好 `vX.Y` 标签推到远端 → 在 Releases 建同名 release → 上传 `dist/ScreenLink-X.Y.zip`（资产名固定用 `ScreenLink.app.zip`，README 的安装说明按这个名字写）。App 为 ad-hoc 签名、未做公证，首次打开需右键 → 打开。
 
 ## 工作原理
 
