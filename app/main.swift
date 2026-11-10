@@ -2,6 +2,7 @@
 //
 // 单实例常驻菜单栏（LSUIElement），所有能力都可单独开关：
 //   启用联动 / 进屏保同步 / 退屏保同步 / 锁屏同步 / 阻止远端屏保 / 强制保持 / 唤醒显示器
+// 开关与生效时间段统一在「控制面板」窗口里管理（PanelController）
 import AppKit
 import Darwin
 
@@ -68,13 +69,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var remoteStateItem: NSMenuItem!
     var enableItem: NSMenuItem!
     var syncItems: [String: NSMenuItem] = [:]      // key -> item
-    var winItems: [String: NSMenuItem] = [:]       // key -> 生效时间菜单项
-    var winTitles: [String: String] = [:]          // key -> 开关显示名
     var roleItems: [String: NSMenuItem] = [:]
     var loginItem: NSMenuItem!
     var testItem: NSMenuItem!
     var masterOnly: [NSMenuItem] = []
     var slaveOnly: [NSMenuItem] = []
+    var panelController: PanelController?
 
     var remoteText = "检测中…"
     var probing = false
@@ -208,6 +208,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         enableItem.image = symbol("bolt.horizontal.circle")
         menu.addItem(enableItem)
 
+        let panelItem = NSMenuItem(title: "控制面板…", action: #selector(openPanel), keyEquivalent: ",")
+        panelItem.target = self
+        panelItem.image = symbol("switch.2")
+        menu.addItem(panelItem)
+
         // ---- 主控行为
         let syncMenu = NSMenu()
         syncItems["syncEnter"] = makeToggle("进入屏保时远端跟随", key: "syncEnter",
@@ -220,13 +225,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                              symbol: "lock", in: syncMenu)
         syncItems["keepAwake"] = makeToggle("本机活跃时阻止远端进屏保", key: "keepAwake",
                                            symbol: "eye", in: syncMenu)
-        addWindowSection(to: syncMenu, keys: [
-            ("syncEnter", "进屏保跟随"),
-            ("holdRemote", "强制远端保持"),
-            ("syncExit", "退屏保跟随"),
-            ("lockAsSaver", "锁屏视同屏保"),
-            ("keepAwake", "阻止远端屏保"),
-        ])
         let syncRoot = NSMenuItem(title: "主控行为", action: nil, keyEquivalent: "")
         syncRoot.image = symbol("slider.horizontal.3")
         syncRoot.submenu = syncMenu
@@ -239,10 +237,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                             symbol: "arrow.clockwise", in: slaveMenu)
         syncItems["wakeDisplay"] = makeToggle("退出时唤醒远端显示器", key: "wakeDisplay",
                                               symbol: "sun.max", in: slaveMenu)
-        addWindowSection(to: slaveMenu, keys: [
-            ("forceHold", "强制保持屏保"),
-            ("wakeDisplay", "退出唤醒显示器"),
-        ])
         let slaveRoot = NSMenuItem(title: "从动行为", action: nil, keyEquivalent: "")
         slaveRoot.image = symbol("slider.horizontal.3")
         slaveRoot.submenu = slaveMenu
@@ -325,23 +319,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return it
     }
 
-    /// 在子菜单里追加「生效时间」区块：每个开关一项，点击弹框配时间段
-    func addWindowSection(to target: NSMenu, keys: [(key: String, title: String)]) {
-        target.addItem(.separator())
-        let head = NSMenuItem(title: "生效时间（时段内才启用）", action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        target.addItem(head)
-        for (key, title) in keys {
-            winTitles[key] = title
-            let it = NSMenuItem(title: title, action: #selector(editWindow(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = key
-            it.image = symbol("clock")
-            target.addItem(it)
-            winItems[key] = it
-        }
-    }
-
     // MARK: 刷新
     func refresh() {
         let isMaster = S.role == "master"
@@ -357,12 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.state = UserDefaults.standard.bool(forKey: key) ? .on : .off
             if S.enabled == false { item.isEnabled = false } else { item.isEnabled = true }
         }
-        for (key, item) in winItems {
-            let w = S.window(key)
-            let win = w.isEmpty ? "全天" : w.replacingOccurrences(of: "-", with: "–")
-            item.title = "\(winTitles[key] ?? key)：\(win)"
-            item.isEnabled = S.enabled
-        }
+        panelController?.refresh()
         for (_, it) in roleItems { it.state = .off }
         roleItems[S.role]?.state = .on
         loginItem.state = loginItemEnabled() ? .on : .off
@@ -450,67 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    @objc func editWindow(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        let cur = S.window(key)
-        let parts = cur.isEmpty ? [] : cur.split(separator: "-", maxSplits: 1).map(String.init)
-
-        let alert = NSAlert()
-        alert.messageText = "生效时间 · \(winTitles[key] ?? key)"
-        alert.informativeText = "仅在时间段内启用该功能，其余时间视同关闭。\n格式 HH:mm（如 09:00）；结束早于开始 = 跨午夜（如 22:00–07:00）。"
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
-
-        let check = NSButton(checkboxWithTitle: "仅在以下时间段生效", target: nil, action: nil)
-        check.state = cur.isEmpty ? .off : .on
-        let startF = NSTextField(frame: NSRect(x: 0, y: 0, width: 64, height: 24))
-        startF.stringValue = parts.count == 2 ? parts[0] : "22:00"
-        startF.placeholderString = "HH:mm"
-        startF.alignment = .center
-        let endF = NSTextField(frame: NSRect(x: 0, y: 0, width: 64, height: 24))
-        endF.stringValue = parts.count == 2 ? parts[1] : "07:00"
-        endF.placeholderString = "HH:mm"
-        endF.alignment = .center
-
-        let row = NSStackView(views: [startF, NSTextField(labelWithString: "至"), endF])
-        row.orientation = .horizontal
-        row.spacing = 8
-        let box = NSStackView(views: [check, row])
-        box.orientation = .vertical
-        box.alignment = .leading
-        box.spacing = 10
-        box.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-        alert.accessoryView = box
-        alert.window.initialFirstResponder = check
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        var v = ""
-        if check.state == .on {
-            let a = startF.stringValue.trimmingCharacters(in: .whitespaces)
-            let b = endF.stringValue.trimmingCharacters(in: .whitespaces)
-            guard parseTimeOfDay(a) != nil, parseTimeOfDay(b) != nil else {
-                let bad = NSAlert()
-                bad.messageText = "时间格式不正确"
-                bad.informativeText = "请用 HH:mm 格式（如 09:00、22:30），时 0–23、分 0–59。"
-                bad.runModal()
-                return
-            }
-            let am = parseTimeOfDay(a)!
-            let bm = parseTimeOfDay(b)!
-            guard am != bm else {
-                let bad = NSAlert()
-                bad.messageText = "开始与结束不能相同"
-                bad.informativeText = "相同时间没有意义；想全天生效请取消勾选「仅在以下时间段生效」。"
-                bad.runModal()
-                return
-            }
-            v = "\(a)-\(b)"
-        }
-        S.setWindow(key, v)
-        appLog("window: \(key)=\(v.isEmpty ? "全天" : v)")
-        Engine.shared.applySettingChange(keepAliveSync: false)
-        refresh()
+    @objc func openPanel() {
+        if panelController == nil { panelController = PanelController() }
+        panelController?.open()
     }
 
     @objc func pickRole(_ sender: NSMenuItem) {
@@ -627,6 +541,298 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appLog("APP quit by user")
         NSApp.terminate(nil)
     }
+}
+
+// MARK: - 控制面板窗口
+// 所有功能开关 + 生效时间段统一在这里管理：
+// 每个功能一行 —— [启用开关] 名称 · 生效状态 | [仅在时段生效] [起] 至 [止]
+final class PanelController: NSObject, NSWindowDelegate {
+    private var windowController: NSWindowController?
+    private var bodyStack: NSStackView!
+    private var rowMap: [String: FeatureRow] = [:]
+    private var builtRole: String?
+
+    /// (key, 显示名, 说明)
+    static let masterFeatures: [(String, String, String)] = [
+        ("syncEnter",   "进入屏保时远端跟随",       "本机进屏保 → 远端同时进屏保"),
+        ("holdRemote",  "本机屏保时强制远端保持",   "远端屏保被划掉立即拉回，禁止退出"),
+        ("syncExit",    "退出屏保时远端跟随",       "本机退屏保 → 远端自动退出"),
+        ("lockAsSaver", "锁屏视同进入屏保",         "直接锁屏（不跑屏保）也触发远端进入"),
+        ("keepAwake",   "本机活跃时阻止远端进屏保", "本机有人在用，远端不会自己睡进屏保"),
+    ]
+    static let slaveFeatures: [(String, String, String)] = [
+        ("forceHold",   "强制保持本机屏保",         "屏保被划掉时自动恢复（主控下发时以主控为准）"),
+        ("wakeDisplay", "退出时唤醒远端显示器",     "退出屏保时把显示器叫醒"),
+    ]
+
+    // MARK: 打开 / 刷新
+    func open() {
+        if windowController == nil { buildWindow() }
+        refresh(forceRebuild: true)
+        windowController?.showWindow(nil)
+        // 不可 resizable 的窗口会按内容 fittingSize 定位，多屏拔插后可能落在屏外 → 每次打开拉回主屏（原点 0,0 那块）中央
+        let mainScreen = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first
+        if let win = windowController?.window, let screen = mainScreen {
+            let f = screen.visibleFrame
+            var r = win.frame
+            r.origin.x = f.midX - r.width / 2
+            r.origin.y = f.midY - r.height / 2
+            win.setFrame(r, display: true)
+            appLog("panel: open frame=\(Int(r.origin.x)),\(Int(r.origin.y)) \(Int(r.width))x\(Int(r.height))")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        windowController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// 菜单开关变化 / 角色切换 / 引擎通知都会走到这里；不可见时跳过（open 会强制刷）
+    func refresh(forceRebuild: Bool = false) {
+        guard let win = windowController?.window, forceRebuild || win.isVisible else { return }
+        if forceRebuild || builtRole != S.role {
+            builtRole = S.role
+            rebuildRows()
+        }
+        for (_, row) in rowMap { row.update() }
+    }
+
+    // MARK: 构建
+    private func rebuildRows() {
+        rowMap.removeAll()
+        bodyStack.arrangedSubviews.forEach { bodyStack.removeArrangedSubview($0); $0.removeFromSuperview() }
+        let features = builtRole == "slave" ? PanelController.slaveFeatures : PanelController.masterFeatures
+        // 一张 NSGridView 装下表头 + 所有功能行，列宽自动对齐，不再手工摆约束
+        var rows: [[NSView]] = [[
+            headerLabel("启用"), headerLabel("功能"), headerLabel("生效状态"),
+            headerLabel("仅在时段生效"), headerLabel("开始"), headerLabel(""), headerLabel("结束"),
+        ]]
+        for f in features {
+            let row = FeatureRow(key: f.0, title: f.1, subtitle: f.2, owner: self)
+            rowMap[f.0] = row
+            rows.append([row.enableBox, row.nameStack, row.stateLabel, row.winCheck,
+                         row.startPick, row.dash, row.endPick])
+        }
+        let grid = NSGridView(views: rows)
+        grid.rowSpacing = 12
+        grid.columnSpacing = 12
+        grid.column(at: 0).xPlacement = .center
+        grid.column(at: 3).xPlacement = .center
+        grid.column(at: 5).xPlacement = .center
+        bodyStack.addArrangedSubview(grid)
+        bodyStack.addArrangedSubview(headerLabel(
+            builtRole == "slave"
+            ? "当前角色：从动 —— 以上为本机被动看护相关功能"
+            : "当前角色：主控 —— 以上为驱动远端相关功能；切换角色后此处自动跟随"))
+    }
+
+    private func headerLabel(_ t: String) -> NSTextField {
+        let l = NSTextField(labelWithString: t)
+        l.font = .systemFont(ofSize: 11, weight: .semibold)
+        l.textColor = .secondaryLabelColor
+        return l
+    }
+
+    private func buildWindow() {
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 430),
+                           styleMask: [.titled, .closable],
+                           backing: .buffered, defer: false)
+        win.title = "ScreenLink 控制面板"
+        win.delegate = self
+        win.isReleasedWhenClosed = false
+        win.center()
+        windowController = NSWindowController(window: win)
+
+        // 直接用窗口自带的 contentView（它由窗口管 frame）；自建 view 当 contentView
+        // 又关 translatesAutoresizingMask 会导致整棵约束树位置不受管
+        let content = win.contentView!
+        let title = NSTextField(labelWithString: "ScreenLink 控制面板")
+        title.font = .systemFont(ofSize: 15, weight: .bold)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        let subtitle = NSTextField(labelWithString:
+            "每个功能可单独开关，并可限定生效时间段（时段外视同关闭）。改动立即生效，无需重启。")
+        subtitle.font = .systemFont(ofSize: 11)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        bodyStack = NSStackView()
+        bodyStack.orientation = .vertical
+        bodyStack.alignment = .leading
+        bodyStack.spacing = 14
+        bodyStack.translatesAutoresizingMaskIntoConstraints = false
+
+        content.addSubview(title)
+        content.addSubview(subtitle)
+        content.addSubview(bodyStack)
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            title.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            subtitle.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            bodyStack.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 18),
+            bodyStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            bodyStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            bodyStack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
+        ])
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // 窗口只隐藏不销毁，下次打开直接复用
+    }
+
+    // MARK: 行内控件事件（由 FeatureRow 转发）
+    fileprivate func featureToggled(_ key: String, _ on: Bool) {
+        UserDefaults.standard.set(on, forKey: key)
+        appLog("switch(panel): \(key)=\(on) win=\(S.window(key).isEmpty ? "全天" : S.window(key))")
+        Engine.shared.applySettingChange()
+        rowMap[key]?.update()
+    }
+
+    fileprivate func windowToggled(_ key: String, _ on: Bool) {
+        let v = on ? (rowMap[key]?.defaultWindow() ?? "22:00-07:00") : ""
+        S.setWindow(key, v)
+        appLog("window(panel): \(key)=\(v.isEmpty ? "全天" : v)")
+        Engine.shared.applySettingChange(keepAliveSync: false)
+        rowMap[key]?.update()
+    }
+
+    fileprivate func timeChanged(_ key: String) {
+        guard let row = rowMap[key] else { return }
+        let a = row.startText(), b = row.endText()
+        guard let am = parseTimeOfDay(a), let bm = parseTimeOfDay(b), am != bm else {
+            row.update()   // 起止相同无意义，回滚显示为已存值
+            return
+        }
+        S.setWindow(key, "\(a)-\(b)")
+        appLog("window(panel): \(key)=\(a)-\(b)")
+        Engine.shared.applySettingChange(keepAliveSync: false)
+        row.update()
+    }
+}
+
+// MARK: - 控制面板 · 单行（控件直接进外层 NSGridView，列自动对齐）
+final class FeatureRow {
+    let key: String
+    let enableBox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let winCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let stateLabel = NSTextField(labelWithString: "—")
+    let startPick: NSDatePicker
+    let endPick: NSDatePicker
+    let dash = NSTextField(labelWithString: "至")
+    let nameStack: NSStackView
+    private let owner: PanelController
+
+    private static let hmFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    init(key: String, title: String, subtitle: String, owner: PanelController) {
+        self.key = key
+        self.owner = owner
+
+        func picker() -> NSDatePicker {
+            let p = NSDatePicker(frame: NSRect(x: 0, y: 0, width: 76, height: 24))
+            p.datePickerStyle = .textField
+            p.datePickerElements = .hourMinute
+            p.datePickerMode = .single
+            p.calendar = Calendar.current
+            p.locale = Locale(identifier: "en_GB")
+            p.dateValue = Date()
+            p.font = .systemFont(ofSize: 12)
+            p.translatesAutoresizingMaskIntoConstraints = false
+            return p
+        }
+        startPick = picker()
+        endPick = picker()
+
+        let name = NSTextField(labelWithString: title)
+        name.font = .systemFont(ofSize: 12, weight: .medium)
+        let sub = NSTextField(labelWithString: subtitle)
+        sub.font = .systemFont(ofSize: 10)
+        sub.textColor = .secondaryLabelColor
+        sub.lineBreakMode = .byTruncatingTail
+        nameStack = NSStackView(views: [name, sub])
+        nameStack.orientation = .vertical
+        nameStack.alignment = .leading
+        nameStack.spacing = 2
+
+        stateLabel.font = .systemFont(ofSize: 11)
+        dash.font = .systemFont(ofSize: 11)
+        dash.alignment = .center
+        dash.textColor = .secondaryLabelColor
+
+        // 列宽：NSGridView 取每列单元格约束宽度的最大值，钉住后整表对齐
+        enableBox.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        winCheck.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        nameStack.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        stateLabel.widthAnchor.constraint(equalToConstant: 116).isActive = true
+        dash.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        startPick.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        endPick.widthAnchor.constraint(equalToConstant: 76).isActive = true
+
+        // target/action 必须在所有存储属性初始化完成后再指向 self
+        enableBox.target = self
+        enableBox.action = #selector(toggleFeature)
+        winCheck.target = self
+        winCheck.action = #selector(toggleWin)
+        startPick.target = self
+        startPick.action = #selector(timePicked)
+        endPick.target = self
+        endPick.action = #selector(timePicked)
+        update()
+    }
+
+    /// 勾选「仅在时段生效」时的默认窗口：取当前已存值，没有则 22:00-07:00
+    func defaultWindow() -> String {
+        let cur = S.window(key)
+        return parseWindow(cur) != nil ? cur : "22:00-07:00"
+    }
+
+    func startText() -> String { FeatureRow.hmFormatter.string(from: startPick.dateValue) }
+    func endText() -> String { FeatureRow.hmFormatter.string(from: endPick.dateValue) }
+
+    /// 把 UserDefaults 里的当前值同步到控件（外部刷控件时防递归：先摘 target）
+    func update() {
+        let on = UserDefaults.standard.bool(forKey: key)
+        enableBox.state = on ? .on : .off
+
+        let w = S.window(key)
+        let hasWin = parseWindow(w) != nil
+        winCheck.state = hasWin ? .on : .off
+
+        let inWin = S.inWindow(key)
+        if !on { stateLabel.stringValue = "已关闭" }
+        else if !hasWin { stateLabel.stringValue = "全天生效" }
+        else { stateLabel.stringValue = inWin ? "生效中 · \(w)" : "未生效 · \(w)" }
+        stateLabel.textColor = (on && inWin) ? .systemGreen : .secondaryLabelColor
+
+        if hasWin, let win = parseWindow(w) {
+            setPicker(startPick, minuteOfDay: win.start)
+            setPicker(endPick, minuteOfDay: win.end)
+        }
+        let controls: [NSControl] = [winCheck, startPick, endPick]
+        for c in controls { c.target = nil }
+        winCheck.isEnabled = on
+        startPick.isEnabled = on && hasWin
+        endPick.isEnabled = on && hasWin
+        winCheck.target = self; winCheck.action = #selector(toggleWin)
+        startPick.target = self; startPick.action = #selector(timePicked)
+        endPick.target = self; endPick.action = #selector(timePicked)
+    }
+
+    private func setPicker(_ p: NSDatePicker, minuteOfDay: Int) {
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        comps.hour = minuteOfDay / 60
+        comps.minute = minuteOfDay % 60
+        if let d = Calendar.current.date(from: comps) {
+            p.target = nil
+            p.dateValue = d
+            p.target = self
+        }
+    }
+
+    @objc private func toggleFeature() { owner.featureToggled(key, enableBox.state == .on) }
+    @objc private func toggleWin() { owner.windowToggled(key, winCheck.state == .on) }
+    @objc private func timePicked() { owner.timeChanged(key) }
 }
 
 // MARK: - 启动
