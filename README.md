@@ -71,6 +71,28 @@ ssh -o BatchMode=yes think@10.1.1.2 'echo OK'   # 应输出 OK，且不询问密
 - **从动端**：首次拉起屏保时会请求「系统事件」自动化权限 → 点**允许**。若误点拒绝，到 `系统设置 → 隐私与安全性 → 自动化` 里勾选 ScreenLink。
 - **两端**：首次 SSH 出网会请求「本地网络」权限 → 点**允许**，否则连接会被拒（表现为 `rc=255`，日志里能看到）。
 
+## Agent 安装与配置
+
+把下面这句话连同代码块交给任意 Coding Agent（Claude Code / Codex / coding-agent skill），即可自动完成下载、安装与配置：
+
+> 用 Releases 里最新的 `ScreenLink-<版本>.dmg` 把 ScreenLink 装到 `/Applications`，按给定参数用 `defaults write com.think.screenlink.app` 写好角色与远端地址，再 `open -a ScreenLink` 启动；主控端启动前先确认对从动机的免密 SSH 已可用。
+
+```bash
+# 主控示例：把 peer 换成从动机的内网 IP（curl 下载不带隔离属性，通常无需右键绕过 Gatekeeper）
+VER=3.1
+curl -fL -o /tmp/ScreenLink.dmg "https://github.com/gsxuan/ScreenLink/releases/download/v${VER}/ScreenLink-${VER}.dmg"
+hdiutil attach /tmp/ScreenLink.dmg -nobrowse -mountpoint /Volumes/ScreenLink
+cp -R /Volumes/ScreenLink/ScreenLink.app /Applications/
+hdiutil detach /Volumes/ScreenLink
+ssh -o BatchMode=yes think@10.1.1.2 'echo OK'          # 免密前置校验，失败先 ssh-copy-id
+defaults write com.think.screenlink.app enabled -bool true
+defaults write com.think.screenlink.app role    -string master
+defaults write com.think.screenlink.app peer    -string 10.1.1.2
+open -a ScreenLink
+```
+
+从动机把 `role` 改成 `slave`、`peer` 留空即可。相关 skills：**coding-agent / claude-code / codex** 负责执行上面的安装配置；跨机免密与环境准备可交给 **ssh** skill。
+
 ## 从源码构建
 
 ```bash
